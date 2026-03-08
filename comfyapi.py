@@ -32,7 +32,7 @@ class Config:
     BACKEND_HOST = "http://192.168.*.*:8000"
 
     # ---------- Jupyter 鉴权 Cookie ----------
-    # 若图片无法显示，请在浏览器登录 Jupyter 后抓包替换
+    # ⚠️ 若图片无法显示，请在浏览器登录 Jupyter 后抓包替换
     JUPYTER_COOKIE = (
         '**********'
     )
@@ -175,21 +175,32 @@ def replace_resolution(workflow: dict, width: int, height: int) -> dict:
             workflow["prompt"][node_id]["inputs"]["height"] = height
     return workflow
 
-def upload_image_to_comfyui(image_file: UploadFile) -> str:
-    """将前端上传的图片转发至 ComfyUI，返回云端文件名"""
-    image_file.file.seek(0)
-    file_bytes = image_file.file.read()
+def upload_image_to_comfyui(image_bytes: bytes, filename: str, mimetype: str) -> str:
+    """将前端上传的图片字节流转发至 ComfyUI，返回云端文件名"""
+    if not image_bytes:
+        raise ValueError("图片内容为空，请重新上传")
+
     files = {
-        "image": (
-            image_file.filename or "upload.png",
-            file_bytes,
-            image_file.content_type or "image/png",
-        )
+        "image": (filename, image_bytes, mimetype),
     }
-    resp = requests.post(Config.COMFYUI_UPLOAD_URL, files=files, timeout=60)
+    # ✅ ComfyUI upload/image 接口必须携带的额外字段
+    data = {
+        "type":      "input",     # 上传到 input 目录
+        "overwrite": "true",      # 同名文件直接覆盖
+    }
+    resp = requests.post(
+        Config.COMFYUI_UPLOAD_URL,
+        files=files,
+        data=data,
+        timeout=60,
+    )
     if resp.status_code == 200:
-        return resp.json().get("name")
-    raise Exception(f"图片上传失败 {resp.status_code}：{resp.text}")
+        result = resp.json()
+        uploaded_name = result.get("name")
+        if not uploaded_name:
+            raise Exception(f"ComfyUI 未返回文件名，响应：{result}")
+        return uploaded_name
+    raise Exception(f"图片上传失败 HTTP {resp.status_code}：{resp.text}")
 
 def run_comfyui_workflow(workflow: dict) -> dict:
     """
@@ -308,7 +319,13 @@ def parse_user_command(command: str) -> dict:
 # 4. Agent 核心处理
 # =============================================================================
 
-def agent_handle(command: str, negative_prompt: str = "", image_file: Optional[UploadFile] = None) -> dict:
+def agent_handle(
+    command:         str,
+    negative_prompt: str   = "",
+    image_bytes:     bytes = None,
+    image_filename:  str   = None,
+    image_mimetype:  str   = None,
+) -> dict:
     """解析指令 → 修改工作流 → 调用 ComfyUI → 构造代理图片 URL → 返回结果"""
     parsed = parse_user_command(command)
     if parsed["error"]:
@@ -327,7 +344,7 @@ def agent_handle(command: str, negative_prompt: str = "", image_file: Optional[U
             return {"status": "error", "message": "不支持的指令类型"}
 
         # ── 2. 替换提示词（含负面提示词）/ 种子 / 分辨率 ──────────────────────
-        # ✅ 将前端传入的 negative_prompt 透传进去
+        # 将前端传入的 negative_prompt 透传进去
         workflow = replace_prompt(workflow, parsed["prompt"], negative_prompt)
         workflow, final_seed = replace_seed(
             workflow, parsed["seed_mode"], parsed["seed_value"]
@@ -337,9 +354,12 @@ def agent_handle(command: str, negative_prompt: str = "", image_file: Optional[U
 
         # ── 3. 图生图：上传参考图并注入 LoadImage 节点 ─────────────────────────
         if parsed["type"] == "img2img":
-            if not image_file:
+            # 调试用：确认类型
+            print(f"[DEBUG] image_bytes type={type(image_bytes)}, len={len(image_bytes) if image_bytes else 0}")
+
+            if not image_bytes:
                 return {"status": "error", "message": "图生图模式必须上传图片"}
-            uploaded_name = upload_image_to_comfyui(image_file)
+            uploaded_name = upload_image_to_comfyui(image_bytes, image_filename, image_mimetype)
             for node_id, node in workflow["prompt"].items():
                 if node.get("class_type") == "LoadImage":
                     workflow["prompt"][node_id]["inputs"]["image"] = uploaded_name
@@ -406,7 +426,37 @@ async def generate(
       - negative_prompt  : 负面提示词（选填，文生图有效）
       - image_file       : 图生图参考图（选填）
     """
-    result = agent_handle(command, negative_prompt, image_file)
+    # 在异步路由内完成所有文件读取，绝不将 UploadFile 对象传出
+    image_bytes    = None
+    image_filename = "upload.png"
+    image_mimetype = "image/png"
+
+    if image_file is not None:
+        try:
+            image_bytes = await image_file.read()   # 唯一的 await 读取点
+        except Exception as e:
+            return {"status": "error", "message": f"文件读取失败：{str(e)}"}
+        finally:
+            await image_file.close()                # 读取后立即关闭
+
+        image_filename = image_file.filename or "upload.png"
+        image_mimetype = image_file.content_type or "image/png"
+
+        # 防御性检查：确认读取到的是 bytes 而非协程
+        if not isinstance(image_bytes, bytes):
+            return {"status": "error", "message": "文件读取异常，请重新上传"}
+
+        if len(image_bytes) == 0:
+            return {"status": "error", "message": "上传的图片文件为空"}
+
+    # 此处 image_bytes 必定是 bytes 或 None，安全传入同步函数
+    result = agent_handle(
+        command,
+        negative_prompt,
+        image_bytes,
+        image_filename,
+        image_mimetype,
+    )
     return result
 
 @app.get("/workflow/negative-prompt")
