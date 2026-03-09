@@ -9,8 +9,21 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>ComfyUI 可视化控制台</h1>
+            <!-- 关机按钮（右上角） -->
+        <button
+            id="power-off-btn"
+            class="power-off-btn"
+            onclick="powerOff()"
+            title="关闭云端实例"
+        >
+            关机
+        </button>
+            <h1>ComfyUI</h1>
+            <h1>可视化控制台</h1>
             <p>支持文生图/图生图</p>
+        </div>
+        <!-- 手机端关机按钮占位（container 内、header 外） -->
+        <div id="power-off-mobile" style="display:none;">
         </div>
 
         <div class="input-area">
@@ -94,7 +107,7 @@
                     </div>
                 </div>
 
-                <div class="form-group">
+                <div class="form-group" id="resolution_select_group">
                    <label>分辨率（宽 x 高，偶数）</label>
                     <div style="display: flex; align-items: center; gap: 8px;">
                         <input type="number" id="resolution-width" value="1080" min="64" step="2"
@@ -135,6 +148,7 @@
             const genConfig = document.getElementById("gen-config");
             const imgUploadGroup = document.getElementById("img-upload-group");
             const modelGroup = document.getElementById("model-select-group");
+            const resolutionGroup = document.getElementById("resolution_select_group")
             
             // 生成配置文生图/图生图显示
             genConfig.style.display = "block";
@@ -144,6 +158,9 @@
 
             // 图生图隐藏模型选择
             modelGroup.style.display = cmdType === "img2img" ? "none" : "flex";
+
+            //
+            resolutionGroup.style.display = cmdType == "img2img" ? "none" : "flex";
 
             // 文生图显示负面提示词，图生图隐藏
             const negGroup = document.getElementById("negative-prompt-group");
@@ -163,32 +180,36 @@
         function buildCommand() {
             const cmdType = document.getElementById("cmd-type").value;
             const prompt = document.getElementById("prompt").value.trim();
-            
-            // 生成类指令（文生图/图生图）
-            const baseModel = document.getElementById("base-model").value;
-            const turboModel = document.getElementById("turbo-model").value;
-            const seedMode = document.getElementById("seed-mode").value;
-            const seedValue = document.getElementById("seed-value").value.trim();
-            const resWidth = document.getElementById("resolution-width").value.trim();
-            const resHeight = document.getElementById("resolution-height").value.trim();
-            const resolution = `${resWidth}x${resHeight}`;
 
             // 基础指令前缀
             let cmdPrefix = cmdType === "text2img" ? "文生图：" : "图生图：";
-            
-            // 构造参数部分
-            let paramStr = `base=${baseModel},turbo=${turboModel}`;
-            if (seedMode === "fixed") {
-                paramStr += ",种子固定";
-            } else if (seedMode === "specify" && seedValue) {
-                paramStr += `,种子：${seedValue}`;
-            } else {
-                paramStr += ",种子随机";
-            }
-            paramStr += `,分辨率：${resolution}`;
 
-            // 完整指令：前缀 + 提示词 + | + 参数
-            return `${cmdPrefix}${prompt}|${paramStr}`;
+            // ── 种子部分（文生图/图生图均有）──
+            const seedMode = document.getElementById("seed-mode").value;
+            const seedValue = document.getElementById("seed-value").value.trim();
+            
+            let seedStr = "";
+            if (seedMode === "fixed") {
+                seedStr = "种子固定";
+            } else if (seedMode === "specify" && seedValue) {
+                seedStr = `种子：${seedValue}`;
+            } else {
+                seedStr = "种子随机";
+            }
+
+            // ── 文生图：拼接 base/turbo/分辨率 ──
+            if (cmdType === "text2img") {
+                const baseModel = document.getElementById("base-model").value;
+                const turboModel = document.getElementById("turbo-model").value;
+                const resWidth = document.getElementById("resolution-width").value.trim();
+                const resHeight = document.getElementById("resolution-height").value.trim();
+
+                const paramStr = `base=${baseModel},turbo=${turboModel},${seedStr},分辨率：${resWidth}x${resHeight}`;
+                return `${cmdPrefix}${prompt}|${paramStr}`;
+            }
+
+            // ── 图生图：只拼接种子 ──
+            return `${cmdPrefix}${prompt}|${seedStr}`;
         }
 
         // 提交请求到Agent
@@ -281,7 +302,6 @@
                     html += `
                         <div class="seed-info">
                             <strong>种子信息：</strong>${result.seed}（模式：${result.seed_mode}）<br>
-                            <strong>文件路径：</strong>${result.file_path}
                         </div>
                         <img src="${result.preview_url}" class="preview-img" alt="生成结果">
                     `;
@@ -343,12 +363,59 @@
             }
         }
 
+        // 关机函数
+        async function powerOff() {
+            // 二次确认，防止误触
+            const confirmed = confirm("⚠️ 确认要关闭云端实例吗？\n关机后生成功能将无法使用，需重新开机。");
+            if (!confirmed) return;
+
+            const btn = document.getElementById("power-off-btn");
+            btn.disabled = true;
+            btn.textContent = "关机中...";
+
+            try {
+                const response = await fetch(AGENT_API_URL + "power-off", {
+                    method: "POST",
+                });
+                const result = await response.json();
+
+                if (result.status === "success") {
+                    btn.textContent = "✅ 已关机";
+                    btn.style.backgroundColor = "#67c23a";
+                    alert("✅ 云端实例关机指令已发送成功！");
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = "⏻ 关机";
+                    alert("❌ 关机失败：" + result.message);
+                }
+            } catch (error) {
+                btn.disabled = false;
+                btn.textContent = "⏻ 关机";
+                alert("❌ 请求失败：" + error.message);
+            }
+        }
+
+        // 根据屏幕宽度动态移动关机按钮
+        function movePowerOffBtn() {
+            const btn = document.getElementById("power-off-btn");
+            const desktopSlot = document.getElementById("power-off-desktop");
+            const mobileSlot  = document.getElementById("power-off-mobile");
+
+            if (window.innerWidth <= 768) {
+                // 📱 手机端：移入 mobile 占位区
+                mobileSlot.style.display = "block";
+                mobileSlot.appendChild(btn);
+            }
+        }
+
         // 初始化
         window.onload = function() {
+            movePowerOffBtn();  // 监听窗口大小变化
             toggleFormFields();
             toggleSeedInput();
             loadNegativePrompt();
         };
+        window.addEventListener("resize", movePowerOffBtn);
     </script>
 </body>
 </html>

@@ -6,6 +6,8 @@ import random
 import uvicorn
 import requests
 from typing import Optional
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 from urllib.parse import quote, unquote, urlparse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, UploadFile, File, Form, Response
@@ -16,14 +18,21 @@ from fastapi import FastAPI, UploadFile, File, Form, Response
 
 FIXED_SEED = None  # 固定种子模式下复用的种子值
 
+# ---------- AutoDL 关机配置 ----------
+AUTODL_INSTANCE_UUID = "*****"
+AUTODL_TOKEN = (
+    "*****"
+)
+AUTODL_POWER_OFF_URL = "https://www.autodl.art/api/v1/adl_dev/dev/instance/pro/power_off"
+
 # =============================================================================
 # 1. 核心配置
 # =============================================================================
 
 class Config:
     # ---------- AutoDL 云端地址 ----------
-    JUPYTER_URL     = "https://a*****"  #在autodl中jupyter的链接地址前面是a
-    COMFYUI_API_URL = "https://u*****"  # 替换为你的ComfyUI公网地址，在autodl中comfyui的链接地址前面是u
+    JUPYTER_URL     = "*****"
+    COMFYUI_API_URL = "*****"
     COMFYUI_PROMPT_URL  = f"{COMFYUI_API_URL}prompt"
     COMFYUI_HISTORY_URL = f"{COMFYUI_API_URL}history"
     COMFYUI_UPLOAD_URL  = f"{COMFYUI_API_URL}upload/image"
@@ -34,9 +43,9 @@ class Config:
     # ---------- Jupyter 鉴权 Cookie ----------
     # ⚠️ 若图片无法显示，请在浏览器登录 Jupyter 后抓包替换
     JUPYTER_COOKIE = (
-        '**********'
+        "*****"
     )
-    XSRF_TOKEN = "**********"
+    XSRF_TOKEN = "*****"
 
     # ---------- 工作流文件路径 ----------
     WORKFLOW_PATHS = {
@@ -66,6 +75,37 @@ class Config:
 # =============================================================================
 # 2. 工作流工具函数
 # =============================================================================
+
+def get_session() -> requests.Session:
+    """
+    创建带重试策略的 Session，复用 TCP 连接，
+    避免频繁建立新连接触发云端限制
+    """
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=5,                        # 最多重试 5 次
+        backoff_factor=2,               # 退避因子：1s, 2s, 4s, 8s, 16s
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=2,             # 连接池大小
+        pool_maxsize=5,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://",  adapter)
+    return session
+
+# 全局 Session 复用（避免每次请求新建连接）
+_session: requests.Session = None
+
+def get_global_session() -> requests.Session:
+    global _session
+    if _session is None:
+        _session = get_session()
+    return _session
 
 def load_workflow(workflow_type: str) -> dict:
     """从本地 workflows 目录加载工作流 JSON，并确保包裹在 {"prompt": ...} 中"""
@@ -179,21 +219,37 @@ def upload_image_to_comfyui(image_bytes: bytes, filename: str, mimetype: str) ->
     """将前端上传的图片字节流转发至 ComfyUI，返回云端文件名"""
     if not image_bytes:
         raise ValueError("图片内容为空，请重新上传")
+    
+    # 生成唯一文件名，避免并发覆盖，如启用，下方的"overwrite"需设为false
+    #ext           = os.path.splitext(filename)[-1] or ".png"
+    #unique_name   = f"{uuid.uuid4().hex}{ext}"   # 如：a3f8c1d2e4b5.png
 
+    session = get_global_session()
     files = {
         "image": (filename, image_bytes, mimetype),
     }
-    # ✅ ComfyUI upload/image 接口必须携带的额外字段
+    # ComfyUI upload/image 接口必须携带的额外字段
     data = {
         "type":      "input",     # 上传到 input 目录
         "overwrite": "true",      # 同名文件直接覆盖
     }
-    resp = requests.post(
-        Config.COMFYUI_UPLOAD_URL,
-        files=files,
-        data=data,
-        timeout=60,
-    )
+    try:
+        resp = session.post(
+            Config.COMFYUI_UPLOAD_URL,
+            files=files,
+            data=data,
+            timeout=60,
+        )
+    except requests.exceptions.ConnectionError:
+        # 连接失败时重建 Session 再试一次
+        global _session
+        _session = get_session()
+        resp = _session.post(
+            Config.COMFYUI_UPLOAD_URL,
+            files=files,
+            data=data,
+            timeout=60,
+        )
     if resp.status_code == 200:
         result = resp.json()
         uploaded_name = result.get("name")
@@ -207,6 +263,7 @@ def run_comfyui_workflow(workflow: dict) -> dict:
     提交工作流到 ComfyUI 并轮询等待完成。
     返回：{"filename": str, "subfolder": str}
     """
+    session   = get_global_session()
     prompt_id = str(uuid.uuid4())
     payload = {
         "prompt_id": prompt_id,
@@ -214,29 +271,79 @@ def run_comfyui_workflow(workflow: dict) -> dict:
         "client_id": "comfyapi",
     }
 
-    resp = requests.post(Config.COMFYUI_PROMPT_URL, json=payload, timeout=30)
+    try:
+        resp = session.post(Config.COMFYUI_PROMPT_URL, json=payload, timeout=30)
+    except requests.exceptions.ConnectionError:
+        global _session
+        _session = get_session()          # 重建 Session
+        resp = _session.post(Config.COMFYUI_PROMPT_URL, json=payload, timeout=30)
+
     if resp.status_code != 200:
         raise Exception(f"提交工作流失败 {resp.status_code}：{resp.text}")
 
     # 轮询历史记录，最长等待 5 分钟
     deadline = time.time() + 300
+    retry_count   = 0
+    max_dns_retry = 3  # DNS 失败最多重试 3 次
+
     while time.time() < deadline:
-        hist_resp = requests.get(
-            f"{Config.COMFYUI_HISTORY_URL}/{prompt_id}", timeout=10
-        )
-        if hist_resp.status_code == 200:
-            history = hist_resp.json()
-            if prompt_id in history and "outputs" in history[prompt_id]:
-                for node_output in history[prompt_id]["outputs"].values():
-                    if "images" in node_output:
-                        img_info = node_output["images"][0]
-                        return {
-                            "filename":  img_info["filename"],
-                            "subfolder": img_info.get("subfolder", ""),
-                        }
-        time.sleep(2)
+        try:
+            hist_resp = requests.get(
+                f"{Config.COMFYUI_HISTORY_URL}/{prompt_id}", 
+                timeout=10
+            )
+            if hist_resp.status_code == 200:
+                history = hist_resp.json()
+                if prompt_id in history and "outputs" in history[prompt_id]:
+                    for node_output in history[prompt_id]["outputs"].values():
+                        if "images" in node_output:
+                            img_info = node_output["images"][0]
+                            return {
+                                "filename":  img_info["filename"],
+                                "subfolder": img_info.get("subfolder", ""),
+                            }
+            retry_count = 0   # 请求成功，重置 DNS 重试计数
+            time.sleep(2)
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.SSLError) as e:
+            retry_count += 1
+            print(f"[WARN] 连接失败（第 {retry_count} 次）：{e}")
+
+            if retry_count >= max_dns_retry:
+                raise Exception(
+                    f"连接云端失败超过 {max_dns_retry} 次，请检查网络或云端实例状态"
+                )
+
+            # 重建 Session 后等待更长时间再重试
+            _session = get_session()
+            session  = _session
+            wait_time = 5 * retry_count   # 5s, 10s, 15s 递增等待
+            print(f"[INFO] 重建 Session，等待 {wait_time}s 后重试...")
+            time.sleep(wait_time)
 
     raise TimeoutError("生成超时（超过 5 分钟）")
+
+# autodl关机函数
+def autodl_remote_power_off(instance_uuid: str, token: str) -> dict:
+    """调用 AutoDL API 关闭云端实例"""
+    headers = {
+        "Authorization": token,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "instance_uuid": instance_uuid,
+    }
+    try:
+        response = requests.post(
+            url=AUTODL_POWER_OFF_URL,
+            headers=headers,
+            data=json.dumps(body),
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
 
 # =============================================================================
 # 3. 指令解析
@@ -390,7 +497,7 @@ def agent_handle(
 
         return {
             "status":      "success",
-            "message":     f"✅ 生成成功！\n{seed_tips}",
+            "message":     f"✅ 生成成功！",
             "preview_url": preview_url,
             "seed":        final_seed,
             "seed_mode":   parsed["seed_mode"],
@@ -521,6 +628,7 @@ async def proxy_image(url: str):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer":    Config.JUPYTER_URL,
     }
+    session = get_global_session()
     try:
         resp = requests.get(target_url, headers=headers, timeout=30)
         resp.raise_for_status()
@@ -531,8 +639,50 @@ async def proxy_image(url: str):
             media_type=content_type,
             headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
+    except requests.exceptions.ConnectionError:
+        # Session 重建后再试一次
+        global _session
+        _session = get_session()
+        try:
+            resp = _session.get(target_url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            content_type = resp.headers.get("Content-Type", "image/png")
+            filename = os.path.basename(urlparse(target_url).path) or "image.png"
+            return Response(
+                content=resp.content,
+                media_type=content_type,
+                headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            )
+        except Exception as e:
+            return Response(content=f"图片代理失败（重试后）：{str(e)}", status_code=500)
     except Exception as e:
         return Response(content=f"图片代理失败：{str(e)}", status_code=500)
+
+@app.post("/power-off")
+async def power_off():
+    """
+    关机路由：前端点击关机按钮时调用。
+    调用 AutoDL API 关闭云端实例。
+    """
+    result = autodl_remote_power_off(
+        instance_uuid=AUTODL_INSTANCE_UUID,
+        token=AUTODL_TOKEN,
+    )
+    # AutoDL 返回 code=0 表示成功
+    if "error" in result:
+        return {
+            "status":  "error",
+            "message": f"关机失败：{result['error']}",
+        }
+    if result.get("code") == "Success":
+        return {
+            "status":  "success",
+            "message": "✅ 云端实例已成功发送关机指令",
+        }
+    return {
+        "status":  "error",
+        "message": f"关机指令响应异常：{json.dumps(result, ensure_ascii=False)}",
+    }
 
 @app.get("/health")
 async def health_check():

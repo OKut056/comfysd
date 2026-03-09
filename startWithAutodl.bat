@@ -44,6 +44,15 @@ if not exist "workflows" (
 )
 
 :: ============================================================
+:: 检查 start_autodlart.py 是否存在
+:: ============================================================
+if not exist "start_autodlart.py" (
+    echo [错误] 未找到 start_autodlart.py，请确认AutoDL远程开机脚本完整！
+    pause
+    exit /b 1
+)
+
+:: ============================================================
 :: 启动 Express 静态服务（server.js） → 新窗口
 :: ============================================================
 echo [启动] Express 服务 (Node.js)  端口：3000
@@ -56,6 +65,14 @@ timeout /t 2 >nul
 :: ============================================================
 echo [启动] FastAPI 服务 (Python)   端口：8000
 start "ComfySD - FastAPI Backend" cmd /k "python comfyapi.py"
+
+timeout /t 2 >nul
+
+:: ============================================================
+:: 启动 AutoDL 实例远程开机脚本（start_autodlart.py） → 新窗口
+:: ============================================================
+echo [启动] AutoDL 实例远程开机服务 (Python)
+start "ComfySD - AutoDL Remote Start" cmd /k "python start_autodlart.py"
 
 :: ============================================================
 :: 等待服务启动后自动打开浏览器

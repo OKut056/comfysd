@@ -20,6 +20,7 @@ body {
     text-align: center;
     margin-bottom: 30px;
     color: #333;
+    position: relative;
 }
 .input-area {
     border: 1px solid #e0e0e0;
@@ -128,4 +129,58 @@ textarea {
     padding: 10px;
     background-color: #fafafa;
     border-left: 4px solid #409eff;
+}
+/* ── 关机按钮 ── */
+.power-off-btn {
+    position: absolute;
+    top: 0;
+    right: 0;
+    padding: 8px 16px;
+    background-color: #f56c6c;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.3s, transform 0.1s;
+    z-index: 10;
+}
+.power-off-btn:hover {
+    background-color: #e63939;
+    transform: scale(1.03);
+}
+.power-off-btn:disabled {
+    background-color: #fab6b6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+#power-off-desktop {
+    position: absolute;
+    top: 50%;
+    right: 16px;
+    transform: translateY(-50%);
+}
+/* 手机端：container 顶部独占一行 */
+@media (max-width: 768px) {
+    #power-off-mobile {
+        display: flex;
+        justify-content: flex-end;   /* 右对齐，也可改 center 居中 */
+        padding: 8px 12px 0;
+    }
+}
+
+/* ── 手机端 input-area 宽度适配 ── */
+@media (max-width: 768px) {
+    .container {
+        padding: 15px;
+    }
+
+    .input-area {
+        padding: 12px;
+        margin-left: -5px;
+        margin-right: -5px;
+        width: calc(100% + 10px);
+    }
 }
