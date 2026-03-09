@@ -10,20 +10,32 @@
     <div class="container">
         <div class="header">
             <!-- 关机按钮（右上角） -->
-        <button
-            id="power-off-btn"
-            class="power-off-btn"
-            onclick="powerOff()"
-            title="关闭云端实例"
-        >
-            关机
-        </button>
+            <button
+                id="power-off-btn"
+                class="power-off-btn"
+                onclick="powerOff()"
+                title="关闭云端实例"
+            >
+                关机
+            </button>
+            <!-- 开机按钮（左上角） -->
+            <button
+                id="power-on-btn"
+                class="power-on-btn"
+                onclick="powerOn()"
+                title="开启云端实例"
+            >
+                开机
+            </button>
             <h1>ComfyUI</h1>
             <h1>可视化控制台</h1>
             <p>支持文生图/图生图</p>
         </div>
         <!-- 手机端关机按钮占位（container 内、header 外） -->
         <div id="power-off-mobile" style="display:none;">
+        </div>
+        <!-- 手机端开机按钮占位（container 内、header 外） -->
+        <div id="power-on-mobile" style="display:none;">
         </div>
 
         <div class="input-area">
@@ -395,27 +407,44 @@
             }
         }
 
-        // 根据屏幕宽度动态移动关机按钮
-        function movePowerOffBtn() {
-            const btn = document.getElementById("power-off-btn");
-            const desktopSlot = document.getElementById("power-off-desktop");
-            const mobileSlot  = document.getElementById("power-off-mobile");
+        // 开机函数
+        async function powerOn() {
+            // 二次确认，防止误触
+            const confirmed = confirm("⚠️ 确认要开启云端实例吗？\n开机后将开始计费。");
+            if (!confirmed) return;
 
-            if (window.innerWidth <= 768) {
-                // 📱 手机端：移入 mobile 占位区
-                mobileSlot.style.display = "block";
-                mobileSlot.appendChild(btn);
+            const btn = document.getElementById("power-on-btn");
+            btn.disabled = true;
+            btn.textContent = "开机中...";
+
+            try {
+                const response = await fetch(AGENT_API_URL + "power-on", {
+                    method: "POST",
+                });
+                const result = await response.json();
+
+                if (result.status === "success") {
+                    btn.textContent = "✅ 已开机";
+                    btn.style.backgroundColor = "#67c23a";
+                    alert("✅ 云端实例开机指令已发送成功！");
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = "⏻ 开机";
+                    alert("❌ 开机失败：" + result.message);
+                }
+            } catch (error) {
+                btn.disabled = false;
+                btn.textContent = "⏻ 开机";
+                alert("❌ 请求失败：" + error.message);
             }
         }
 
         // 初始化
         window.onload = function() {
-            movePowerOffBtn();  // 监听窗口大小变化
             toggleFormFields();
             toggleSeedInput();
             loadNegativePrompt();
         };
-        window.addEventListener("resize", movePowerOffBtn);
     </script>
 </body>
 </html>

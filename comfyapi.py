@@ -18,12 +18,13 @@ from fastapi import FastAPI, UploadFile, File, Form, Response
 
 FIXED_SEED = None  # 固定种子模式下复用的种子值
 
-# ---------- AutoDL 关机配置 ----------
+# ---------- AutoDL 配置 ----------
 AUTODL_INSTANCE_UUID = "*****"
 AUTODL_TOKEN = (
     "*****"
 )
 AUTODL_POWER_OFF_URL = "https://www.autodl.art/api/v1/adl_dev/dev/instance/pro/power_off"
+AUTODL_POWER_ON_URL = "https://www.autodl.art/api/v1/adl_dev/dev/instance/pro/power_on"
 
 # =============================================================================
 # 1. 核心配置
@@ -45,12 +46,12 @@ class Config:
     JUPYTER_COOKIE = (
         "*****"
     )
-    XSRF_TOKEN = "*****"
+    XSRF_TOKEN = "2%7C41de04b1%7Cf9382e857a0bb5d300838069e64c0618%7C1772698149"
 
     # ---------- 工作流文件路径 ----------
     WORKFLOW_PATHS = {
         "z_image":   r".\workflows\Z-Image_双重采样工作流.json",
-        "qwen_edit": r".\workflows\Qwen-Imag-Eedit-2511图像编辑.json",
+        "qwen_edit": r".\workflows\Qwen-Imag-Eedit-2511-4steplora图像编辑.json",
     }
 
     # ---------- 种子参数名（兼容各类工作流节点） ----------
@@ -345,6 +346,29 @@ def autodl_remote_power_off(instance_uuid: str, token: str) -> dict:
     except requests.exceptions.RequestException as e:
         return {"error": str(e)}
 
+# autodl开机函数
+def autodl_remote_power_on(instance_uuid: str, token: str) -> dict:
+    """调用 AutoDL API 开启云端实例"""
+    headers = {
+        "Authorization": token,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "instance_uuid": instance_uuid,
+        "payload": "gpu"
+    }
+    try:
+        response = requests.post(
+            url=AUTODL_POWER_ON_URL,
+            headers=headers,
+            data=json.dumps(body),
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
+    
 # =============================================================================
 # 3. 指令解析
 # =============================================================================
@@ -682,6 +706,32 @@ async def power_off():
     return {
         "status":  "error",
         "message": f"关机指令响应异常：{json.dumps(result, ensure_ascii=False)}",
+    }
+
+@app.post("/power-on")
+async def power_on():
+    """
+    开机路由：前端点击开机按钮时调用。
+    调用 AutoDL API 开启云端实例。
+    """
+    result = autodl_remote_power_on(
+        instance_uuid=AUTODL_INSTANCE_UUID,
+        token=AUTODL_TOKEN,
+    )
+    # AutoDL 返回 code=0 表示成功
+    if "error" in result:
+        return {
+            "status":  "error",
+            "message": f"开机失败：{result['error']}",
+        }
+    if result.get("code") == "Success":
+        return {
+            "status":  "success",
+            "message": "✅ 云端实例已成功发送开机指令",
+        }
+    return {
+        "status":  "error",
+        "message": f"开机指令响应异常：{json.dumps(result, ensure_ascii=False)}",
     }
 
 @app.get("/health")

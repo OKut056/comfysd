@@ -156,19 +156,30 @@ textarea {
     transform: none;
 }
 
-#power-off-desktop {
+/* ── 开机按钮 ── */
+.power-on-btn {
     position: absolute;
-    top: 50%;
-    right: 16px;
-    transform: translateY(-50%);
+    top: 0;
+    left: 0;
+    padding: 8px 16px;
+    background-color: #f56c6c;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.3s, transform 0.1s;
+    z-index: 10;
 }
-/* 手机端：container 顶部独占一行 */
-@media (max-width: 768px) {
-    #power-off-mobile {
-        display: flex;
-        justify-content: flex-end;   /* 右对齐，也可改 center 居中 */
-        padding: 8px 12px 0;
-    }
+.power-on-btn:hover {
+    background-color: #e63939;
+    transform: scale(1.03);
+}
+.power-on-btn:disabled {
+    background-color: #fab6b6;
+    cursor: not-allowed;
+    transform: none;
 }
 
 /* ── 手机端 input-area 宽度适配 ── */
