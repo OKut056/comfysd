@@ -4,11 +4,11 @@
 用于本地的将在此工程完成后单独适配并单独发布。
 
 电脑端
+
 <img width="2559" height="1309" alt="image" src="https://github.com/user-attachments/assets/361c8beb-9095-47f9-9584-a55bb6b055ae" />
 
-
-
 适配手机端
+
 <img width="733" height="1188" alt="image" src="https://github.com/user-attachments/assets/6304218e-7cc4-49c0-907a-f4f301ef8799" />
 
 
